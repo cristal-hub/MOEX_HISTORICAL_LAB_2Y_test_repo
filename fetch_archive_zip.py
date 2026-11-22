@@ -5,7 +5,11 @@
 # минутных свечей через T-Invest History API (read-only GET).
 #
 # RESEARCH ONLY. READ ONLY. NO LIVE ORDERS. NO REAL MONEY.
-# NO BROKER EXECUTION. NO MASS DOWNLOAD (строго один запрос на запуск).
+# NO MASS DOWNLOAD: строго ОДИН логический запрос (один архив) на запуск.
+# Физически запуск может выполнить до N GET-попыток (ограничено):
+# len(HISTORY_ENDPOINTS) x MAX_HTTP_ATTEMPTS; повтор только при 429
+# (уважение Retry-After); полный учёт — в мете http_requests_max_possible
+# и http_requests_made. Это НЕ «один GET».
 #
 # Гарантии:
 # - токен читается ТОЛЬКО из переменной окружения
@@ -25,6 +29,7 @@ import json
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -53,11 +58,27 @@ def build_arg_parser():
     return parser
 
 
+def build_request_url(endpoint: str, instrument_id: str, year: int) -> str:
+    """Полный GET URL History API: endpoint + обязательные query-параметры.
+
+    Параметры instrument_id (uid или figi) и year передаются СЕРВЕРУ
+    именно в URL (urllib.parse.urlencode — корректное кодирование);
+    токен в URL не попадает никогда (только заголовок Authorization,
+    см. http_get_stream). TLS-проверка не отключается, метод — GET.
+    """
+    query = urllib.parse.urlencode({
+        "instrument_id": instrument_id,
+        "year": int(year),
+    })
+    return f"{endpoint}?{query}"
+
+
 def http_get_stream(url: str, token: str | None, out_tmp: Path,
                     timeout: int) -> dict:
-    """Один read-only GET. Тело пишется в out_tmp потоком.
+    """Один read-only GET по готовому URL (с query-параметрами).
 
-    Возвращает факт-словарь (status/headers/size). Токен не логируется.
+    Тело пишется в out_tmp потоком. Возвращает факт-словарь
+    (status/headers/size). Токен не логируется.
     """
     request = urllib.request.Request(url, method="GET")
     request.add_header("Accept", "*/*")
@@ -161,8 +182,11 @@ def run_fetch(args) -> dict:
     """Основная логика. Возвращает мету запуска (без секретов)."""
     year = int(args.year)
     id_type = args.id_type
+    # instrument_id: явное --id-value или фактическое значение конфига
+    # для выбранного типа идентификатора (uid | figi)
     id_value = args.id_value or cfg.INSTRUMENT[id_type]
     ticker = cfg.INSTRUMENT["ticker"]
+    endpoints = pick_endpoint(args.endpoint)
     meta = {
         "script": "fetch_archive_zip.py",
         "stage": "2A",
@@ -176,7 +200,9 @@ def run_fetch(args) -> dict:
             "id_provenance": cfg.INSTRUMENT["id_provenance"],
             "timeframe_source": cfg.PROTOTYPE_TIMEFRAME_SRC,
         },
-        "endpoints_order": pick_endpoint(args.endpoint),
+        "endpoints_order": endpoints,
+        "http_requests_max_possible": len(endpoints) * cfg.MAX_HTTP_ATTEMPTS,
+        "http_requests_made": 0,
         "token_variable": cfg.TOKEN_VAR_NAME,
         "token_available": common.token_available(),
         "token_value_saved": False,
@@ -218,23 +244,34 @@ def run_fetch(args) -> dict:
         return meta
 
     tmp_path = cfg.RAW_ZIPS_DIR / (final_path.name + ".part")
+    # Каталог назначения создаётся ДО попыток: .part пишется потоком,
+    # и отсутствие каталога не должно срывать загрузку на первом байте
+    cfg.RAW_ZIPS_DIR.mkdir(parents=True, exist_ok=True)
 
-    for endpoint in pick_endpoint(args.endpoint):
+    for endpoint in endpoints:
         for attempt in range(1, cfg.MAX_HTTP_ATTEMPTS + 1):
             wait = limiter.acquire()
+            # P0: параметры year и instrument_id уходят СЕРВЕРУ в URL
+            url = build_request_url(endpoint, id_value, year)
             attempt_meta = {
                 "endpoint": endpoint,
+                "url": url,
+                "request_method": "GET",
+                "request_query": {
+                    "instrument_id": id_value,
+                    "year": year,
+                },
                 "attempt": attempt,
                 "self_limit_wait_sec": round(wait, 2),
                 "probe_noauth": bool(args.probe_noauth),
             }
             meta["attempts"].append(attempt_meta)
             common.log(
-                f"GET {endpoint} year={year} instrument_id={id_type} "
-                f"attempt={attempt}{ ' (NOAUTH probe)' if args.probe_noauth else '' }"
+                f"GET {url} attempt={attempt}"
+                f"{ ' (NOAUTH probe)' if args.probe_noauth else '' }"
             )
             result = http_get_stream(
-                endpoint,
+                url,
                 None if args.probe_noauth else token,
                 tmp_path,
                 cfg.REQUEST_TIMEOUT_SEC,
@@ -256,6 +293,7 @@ def run_fetch(args) -> dict:
                         "unexpected 200 without auth (probe only, "
                         "ZIP не сохраняется)"
                     )
+                    meta["http_requests_made"] = len(meta["attempts"])
                     break
                 content_length = result["headers"].get("Content-Length")
                 size = result.get("size_downloaded", 0)
@@ -271,12 +309,14 @@ def run_fetch(args) -> dict:
                 cfg.RAW_ZIPS_DIR.mkdir(parents=True, exist_ok=True)
                 if final_path.exists() and not args.allow_overwrite:
                     meta["reason_not_executed"] = "NO_OVERWRITE: файл появился во время загрузки"
+                    meta["http_requests_made"] = len(meta["attempts"])
                     return meta
                 tmp_path.replace(final_path)
                 meta["executed"] = True
                 meta["saved_zip"] = str(final_path)
                 meta["sha256"] = common.sha256_file(final_path)
                 meta["status_final"] = 200
+                meta["http_requests_made"] = len(meta["attempts"])
                 return meta
 
             if status == 429:
@@ -302,6 +342,7 @@ def run_fetch(args) -> dict:
                     "HTTP 404: архив за запрошенный год не найден "
                     "(кандидат absent_404; подтверждение фактом — задача 2А/2Б)"
                 )
+                meta["http_requests_made"] = len(meta["attempts"])
                 return meta
 
             # 401/403/5xx/прочее: фиксирование и следующий эндпоинт
@@ -314,6 +355,9 @@ def run_fetch(args) -> dict:
     if not meta["executed"] and meta["status_final"] != 404:
         meta["reason_not_executed"] = meta.get("reason_not_executed") or \
             "все попытки завершились без 200 (см. attempts)"
+
+    # P3: фактическое число выполненных GET-попыток (<= http_requests_max_possible)
+    meta["http_requests_made"] = len(meta["attempts"])
 
     return meta
 

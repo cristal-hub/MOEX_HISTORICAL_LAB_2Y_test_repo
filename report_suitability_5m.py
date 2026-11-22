@@ -3,22 +3,32 @@
 # MOEX_HISTORICAL_LAB_2Y — Этап 2А, скрипт 4/4
 # report_suitability_5m.py — отчёт о пригодности нормализованных
 # архивных данных 1M для последующей агрегации 1M -> 5M
-# (по спецификации раздела 8 и проверкам консервации 9.3 плана).
+# (по спецификации раздела 8 и проверкам консервации 9.3 плана v2.2).
 #
 # RESEARCH ONLY. READ ONLY. ADDITIVE ONLY. NO OVERWRITE.
 #
-# Проверяется (на нормализованном CSV прототипа):
-# - уникальность ключа time, сортировка, выравнивание на минуту;
-# - попадание в запрошенный календарный год;
-# - имитация полной агрегации 1M->5M (все бакеты, включая incomplete):
-#   сетка UTC floor(t,5min); open=первая, close=последняя,
-#   high=max, low=min, volume=sum; minutes_seen;
-# - правило завершённости бакета 8.3: is_complete всех строк true
-#   И T+5мин <= H_end (архивные строки is_complete=true по 8.3.5);
-# - консервация объёма уровня A (9.3-A): A1/A2 ДО фильтрации;
-# - баланс разбиения уровня B (9.3-B): B1/B2 ПОСЛЕ фильтрации;
-# - по-дневная плотность и границы (факт, без календаря MOEX).
-# Вердикт suitable_for_5m_aggregation + список блокеров + ограничения.
+# Исправления раунда ревью 1 (P2):
+# 1. Проверка time_sorted выполняется по ИСХОДНОЙ последовательности
+#    строк ДО какой-либо сортировки (раньше проверка выполнялась после
+#    сортировки и была тривиально истинной).
+# 2. Фактические значения is_complete входного CSV проверяются и
+#    публикуются (true/false/invalid счётчики).
+# 3. Строки с is_complete=false не попадают в «завершённые» данные
+#    без явного учёта: они участвуют в консервации уровня A наравне
+#    со всеми (план 9.3), но их объём отдельно посчитан, а их бакеты
+#    исключены из complete с явной причиной.
+# 4. Правило завершённости 5M-бакета = план 8.3.2 (ОБА условия):
+#    a) is_complete ВСЕХ входящих строк == true;
+#    b) T + 5 мин <= H_end, где горизонт считается ТОЛЬКО по строкам
+#       с is_complete=true (H_end = начало последней завершённой
+#       минуты + 1 мин, план 8.3.1); uncompleted-свеча горизонт
+#       не продлевает.
+# 5. Причины исключения — из перечня плана 9.6:
+#    contains_incomplete_row | tail_window_beyond_horizon.
+#
+# Согласованные правила агрегации плана v2.2 НЕ меняются:
+# сетка UTC floor(t, 5min); open=первая, close=последняя, high=max,
+# low=min, volume=sum; консервация A1/A2 до фильтрации, B1/B2 после.
 # ============================================================
 
 import argparse
@@ -49,8 +59,16 @@ def read_normalized_csv(path: Path) -> dict:
 
 
 def parse_rows(rows: list) -> dict:
+    """Разбор строк + ПРОВЕРКА ФАКТИЧЕСКИХ значений is_complete (P2.2).
+
+    is_complete парсится строго: 'true'/'false' (регистр и пробелы
+    нормализуются); любое иное значение — is_complete_invalid и для
+    правила завершённости трактуется консервативно как False.
+    """
     parsed = []
-    problems = {"time_unparseable": 0, "price_unparseable": 0, "volume_invalid": 0}
+    problems = {"time_unparseable": 0, "price_unparseable": 0,
+                "volume_invalid": 0, "is_complete_invalid": 0}
+    ic_values = {"true": 0, "false": 0, "invalid": 0}
     for row in rows:
         dt, _ = common.parse_time_any(row["time"])
         if dt is None:
@@ -68,27 +86,48 @@ def parse_rows(rows: list) -> dict:
         if vol is None or vol < 0:
             problems["volume_invalid"] += 1
             continue
-        parsed.append((dt, o, h, l, c, vol))
-    return {"parsed": parsed, "problems": problems}
+        raw_ic = str(row.get("is_complete", "")).strip().lower()
+        if raw_ic == "true":
+            ic = True
+        elif raw_ic == "false":
+            ic = False
+        else:
+            ic = False                      # консервативно: incomplete
+            problems["is_complete_invalid"] += 1
+        ic_values["true" if ic and raw_ic == "true" else
+                  ("false" if raw_ic == "false" else "invalid")] += 1
+        parsed.append((dt, o, h, l, c, vol, ic))
+    return {"parsed": parsed, "problems": problems, "is_complete_values": ic_values}
 
 
 def aggregate_5m(parsed: list) -> dict:
-    """Полная агрегация (все бакеты, включая incomplete) — план 8.1-8.3."""
+    """Полная агрегация (все бакеты, включая incomplete) — план 8.1-8.3 v2.2.
+
+    Завершённость бакета — план 8.3.2 (ОБА условия):
+    a) is_complete всех исходных строк бакета == true;
+    b) T + 5 мин <= H_end, где H_end строится ТОЛЬКО по строкам с
+       is_complete=true (план 8.3.1); агрегатор никогда не «повышает»
+       завершённость (план 8.3.7).
+    Строки с is_complete=false — валидные строки: участвуют в
+    консервации уровня A наравне со всеми (план 9.3), их объём
+    учтён отдельно и целиком лежит в исключённых бакетах.
+    """
     if not parsed:
         return {"error": "нет валидных строк"}
-    parsed.sort(key=lambda x: x[0])
-    # Горизонт: только по строкам is_complete=true; у архива все true (8.3.5).
-    # В нормализованном CSV прототипа is_complete всегда true — проверяется.
+    parsed = sorted(parsed, key=lambda x: x[0])
+
+    # Горизонт H_end — ТОЛЬКО по строкам is_complete=true (план 8.3.1):
+    # H_end = (начало последней завершённой минуты) + 1 минута.
+    complete_starts = [t for t, _o, _h, _l, _c, _v, ic in parsed if ic]
+    h_end = max(complete_starts) + timedelta(minutes=1) if complete_starts else None
+
     buckets = defaultdict(list)
-    for dt, o, h, l, c, v in parsed:
+    for dt, o, h, l, c, v, ic in parsed:
         minute_index = (dt.hour * 60 + dt.minute) // BUCKET_MINUTES
         bucket_start = dt.replace(hour=minute_index * BUCKET_MINUTES // 60,
                                   minute=minute_index * BUCKET_MINUTES % 60,
                                   second=0, microsecond=0)
-        buckets[bucket_start].append((dt, o, h, l, c, v))
-
-    last_complete_ts = max(t for t, _o, _h, _l, _c, _v in parsed)
-    h_end = last_complete_ts + timedelta(minutes=1)
+        buckets[bucket_start].append((dt, o, h, l, c, v, ic))
 
     all_buckets = []
     volume_all = Decimal(0)
@@ -99,13 +138,23 @@ def aggregate_5m(parsed: list) -> dict:
     minutes_excluded = 0
     complete_count = 0
     incomplete_count = 0
+    rows_is_complete_false = sum(1 for *_x, ic in parsed if not ic)
+    volume_of_incomplete_rows = sum(
+        (v for _t, _o, _h, _l, _c, v, ic in parsed if not ic), Decimal(0))
+    volume_of_incomplete_rows_in_excluded = Decimal(0)
+    incomplete_rows_in_complete_buckets = 0
     excluded_details = []
 
     for bucket_start in sorted(buckets):
         items = sorted(buckets[bucket_start], key=lambda x: x[0])
-        volume_sum = sum((v for _t, _o, _h, _l, _c, v in items), Decimal(0))
+        volume_sum = sum((v for _t, _o, _h, _l, _c, v, _ic in items), Decimal(0))
         minutes_seen = len(items)
-        is_complete = (bucket_start + timedelta(minutes=BUCKET_MINUTES) <= h_end)
+        bucket_incomplete_rows = sum(1 for *_x, ic in items if not ic)
+        # План 8.3.2: завершённость = (a) все строки true И (b) T+5 <= H_end
+        all_rows_complete = bucket_incomplete_rows == 0
+        time_ok = (h_end is not None
+                   and bucket_start + timedelta(minutes=BUCKET_MINUTES) <= h_end)
+        is_complete = all_rows_complete and time_ok
         bucket = {
             "bucket_start_utc": bucket_start.isoformat(),
             "open": str(items[0][1].normalize()),
@@ -114,6 +163,7 @@ def aggregate_5m(parsed: list) -> dict:
             "close": str(items[-1][4].normalize()),
             "volume": int(volume_sum),
             "minutes_seen": minutes_seen,
+            "rows_is_complete_false": bucket_incomplete_rows,
             "is_complete": bool(is_complete),
         }
         all_buckets.append(bucket)
@@ -123,25 +173,34 @@ def aggregate_5m(parsed: list) -> dict:
             complete_count += 1
             volume_complete += volume_sum
             minutes_complete += minutes_seen
+            incomplete_rows_in_complete_buckets += bucket_incomplete_rows
         else:
             incomplete_count += 1
             volume_excluded += volume_sum
             minutes_excluded += minutes_seen
+            volume_of_incomplete_rows_in_excluded += sum(
+                (v for _t, _o, _h, _l, _c, v, ic in items if not ic), Decimal(0))
+            reason = ("contains_incomplete_row" if not all_rows_complete
+                      else "tail_window_beyond_horizon")
             excluded_details.append({
                 "bucket_start_utc": bucket_start.isoformat(),
                 "minutes_seen": minutes_seen,
                 "volume": int(volume_sum),
-                "reason": "tail_window_beyond_horizon",
+                "rows_is_complete_false": bucket_incomplete_rows,
+                "reason": reason,
             })
 
-    volume_input = sum((v for _t, _o, _h, _l, _c, v in parsed), Decimal(0))
+    volume_input = sum((_v for _t, _o, _h, _l, _c, _v, _ic in parsed), Decimal(0))
     a1_ok = volume_input == volume_all
     a2_ok = minutes_all == len(parsed)
     b1_ok = volume_all == volume_complete + volume_excluded
     b2_ok = minutes_all == minutes_complete + minutes_excluded
     return {
-        "h_end_utc": h_end.isoformat(),
-        "last_1m_start_utc": last_complete_ts.isoformat(),
+        "h_end_utc": h_end.isoformat() if h_end else None,
+        "h_end_basis": ("последняя минута с is_complete=true + 1 мин (план 8.3.1)"
+                        if complete_starts else "не определён: нет строк is_complete=true"),
+        "last_complete_1m_start_utc": (max(complete_starts).isoformat()
+                                       if complete_starts else None),
         "bucket_count": len(all_buckets),
         "complete_bucket_count": complete_count,
         "incomplete_bucket_count": incomplete_count,
@@ -153,6 +212,13 @@ def aggregate_5m(parsed: list) -> dict:
         "valid_1m_input_rows": len(parsed),
         "minutes_in_complete_buckets": minutes_complete,
         "minutes_in_excluded_incomplete_buckets": minutes_excluded,
+        "rows_is_complete_false": rows_is_complete_false,
+        "volume_of_incomplete_rows": int(volume_of_incomplete_rows),
+        "volume_of_incomplete_rows_in_excluded_buckets":
+            int(volume_of_incomplete_rows_in_excluded),
+        "incomplete_rows_fully_inside_excluded_buckets": bool(
+            volume_of_incomplete_rows == volume_of_incomplete_rows_in_excluded
+            and incomplete_rows_in_complete_buckets == 0),
         "conservation": {
             "A1_sum_volume_1m_eq_all_buckets": bool(a1_ok),
             "A2_minutes_eq_rows": bool(a2_ok),
@@ -166,7 +232,7 @@ def aggregate_5m(parsed: list) -> dict:
 
 def day_density(parsed: list) -> dict:
     by_day = defaultdict(list)
-    for dt, _o, _h, _l, _c, _v in parsed:
+    for dt, _o, _h, _l, _c, _v, _ic in parsed:
         by_day[dt.date()].append(dt)
     days = []
     for day, times in sorted(by_day.items()):
@@ -202,16 +268,21 @@ def build_report(normalized_csv: Path, requested_year: int) -> dict:
     parsed_result = parse_rows(data["rows"])
     report["input_rows"] = len(data["rows"])
     report["parse_problems"] = parsed_result["problems"]
+    report["is_complete_values"] = parsed_result["is_complete_values"]
     parsed = parsed_result["parsed"]
     if not parsed:
         report["error"] = "нет валидных строк после разбора"
         return report
 
+    # P2.1: проверка сортировки — по ИСХОДНОЙ последовательности строк,
+    # ДО любой сортировки (aggregate_5m сортирует собственную копию).
+    original_keys = [t for t, *_rest in parsed]
+    report["time_sorted"] = original_keys == sorted(original_keys)
+    report["time_unique"] = len(set(original_keys)) == len(original_keys)
+    report["minute_aligned"] = all(t.second == 0 and t.microsecond == 0
+                                   for t in original_keys)
     parsed.sort(key=lambda x: x[0])
-    keys = [t for t, *_ in parsed]
-    report["time_unique"] = len(set(keys)) == len(keys)
-    report["time_sorted"] = keys == sorted(keys)
-    report["minute_aligned"] = all(t.second == 0 and t.microsecond == 0 for t in keys)
+    keys = [t for t, *_rest in parsed]
     years = {t.year for t in keys}
     report["years_present"] = sorted(years)
     report["within_requested_year"] = years == {requested_year}
@@ -221,6 +292,9 @@ def build_report(normalized_csv: Path, requested_year: int) -> dict:
     report["day_density"] = day_density(parsed)
 
     blockers = []
+    if not report["time_sorted"]:
+        blockers.append("входные строки не отсортированы по time "
+                        "(проверено по исходному порядку до сортировки)")
     if not report["time_unique"]:
         blockers.append("дубликаты ключа time (план 8.4 — недопустимо)")
     if not report["minute_aligned"]:
@@ -229,22 +303,42 @@ def build_report(normalized_csv: Path, requested_year: int) -> dict:
         blockers.append(f"метки вне запрошенного года: {report['years_present']}")
     if any(parsed_result["problems"].values()):
         blockers.append(f"неразобранные строки: {parsed_result['problems']}")
-    if "conservation" in agg:
+    ic_vals = parsed_result["is_complete_values"]
+    if ic_vals["invalid"]:
+        blockers.append(f"некорректные значения is_complete: {ic_vals['invalid']} "
+                        "(допустимо 'true'/'false')")
+    if ic_vals["false"]:
+        blockers.append(
+            f"строки с is_complete=false: {ic_vals['false']} "
+            "(архивные строки должны быть true по плану 8.3.5; в агрегации "
+            "учтены явно: их бакеты исключены из complete с причиной "
+            "contains_incomplete_row)")
+    if agg.get("h_end_utc") is None and "error" not in agg:
+        blockers.append("нет строк с is_complete=true — H_end не определён "
+                        "(план 8.3.1); все бакеты исключены")
+    if agg.get("conservation"):
         cons = agg["conservation"]
         for name in ("A1_sum_volume_1m_eq_all_buckets", "A2_minutes_eq_rows",
                      "B1_volume_split_balance", "B2_minutes_split_balance"):
             if not cons.get(name):
                 blockers.append(f"консервация не сошлась: {name} (план 9.3)")
-    else:
+        if not agg.get("incomplete_rows_fully_inside_excluded_buckets", True):
+            blockers.append("строки is_complete=false попали в complete-бакеты "
+                            "(нарушение плана 8.3.2a) — явный учёт нарушен")
+    elif "error" not in agg:
         blockers.append("агрегация не выполнена")
 
     report["blockers"] = blockers
     report["suitable_for_5m_aggregation"] = not blockers
     report["verdict_note"] = (
         "вердикт ограничен этапом 2А: структура и статика одного архива. "
+        "time_sorted проверен по исходному порядку строк до сортировки; "
+        "завершённость бакетов — план 8.3.2 (is_complete всех строк И "
+        "T+5 <= H_end; горизонт только по строкам is_complete=true). "
         "НЕ подтверждено на 2А: единицы объёма эмпирически (класс 3, план 10.2), "
         "полнота по торговому календарю (класс 4-5, план 10.2; coverage 9.6), "
-        "суточное обновление (2Б), 429/лимиты (2В)"
+        "суточное обновление (2Б), 429/лимиты (2В), статус sealed года "
+        "(8.3.2b-альтернатива — вне 2А)"
     )
     return report
 
@@ -256,13 +350,16 @@ def write_markdown(report: dict, path: Path) -> None:
     else:
         agg = report.get("aggregation_5m", {})
         cons = agg.get("conservation", {})
+        ic_vals = report.get("is_complete_values", {})
         lines += [
             f"- источник: `{report.get('normalized_csv')}`",
             f"- входных строк: {report.get('input_rows')}; "
             f"проблем разбора: {report.get('parse_problems')}",
-            f"- time уникален: **{report.get('time_unique')}**; отсортирован: "
-            f"**{report.get('time_sorted')}**; выровнен на минуту: "
-            f"**{report.get('minute_aligned')}**",
+            f"- time уникален: **{report.get('time_unique')}**; отсортирован "
+            f"(исходный порядок ДО сортировки): **{report.get('time_sorted')}**; "
+            f"выровнен на минуту: **{report.get('minute_aligned')}**",
+            f"- is_complete в данных: true={ic_vals.get('true', 0)}, "
+            f"false={ic_vals.get('false', 0)}, invalid={ic_vals.get('invalid', 0)}",
             f"- годы в данных: {report.get('years_present')} (запрошен "
             f"{report.get('requested_year')})",
             "",
@@ -271,8 +368,12 @@ def write_markdown(report: dict, path: Path) -> None:
             f"- бакетов 5M: {agg.get('bucket_count')} (complete: "
             f"{agg.get('complete_bucket_count')}, incomplete: "
             f"{agg.get('incomplete_bucket_count')})",
-            f"- H_end: {agg.get('h_end_utc')} (последняя минута: "
-            f"{agg.get('last_1m_start_utc')})",
+            f"- H_end: {agg.get('h_end_utc')} ({agg.get('h_end_basis')}); "
+            f"последняя завершённая минута: {agg.get('last_complete_1m_start_utc')}",
+            f"- строк is_complete=false: {agg.get('rows_is_complete_false')} "
+            f"(объём {agg.get('volume_of_incomplete_rows')}); все они лежат в "
+            f"исключённых бакетах: "
+            f"**{agg.get('incomplete_rows_fully_inside_excluded_buckets')}**",
             "",
             "## Консервация (план 9.3, уровни A/B)",
             "",

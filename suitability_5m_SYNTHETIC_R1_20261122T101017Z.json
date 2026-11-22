@@ -1,0 +1,123 @@
+{
+  "script": "report_suitability_5m.py",
+  "stage": "2A",
+  "created_utc": "2026-11-22T10:10:17.564830+00:00",
+  "normalized_csv": "data/normalized/SBER__e6123145-9665-43e0-8413-cd61b8aa9b13_2025_SYNTHETIC.normalized.csv",
+  "requested_year": 2025,
+  "synthetic": true,
+  "bucket_minutes": 5,
+  "input_rows": 3977,
+  "parse_problems": {
+    "time_unparseable": 0,
+    "price_unparseable": 0,
+    "volume_invalid": 0,
+    "is_complete_invalid": 0
+  },
+  "is_complete_values": {
+    "true": 3977,
+    "false": 0,
+    "invalid": 0
+  },
+  "time_sorted": true,
+  "time_unique": true,
+  "minute_aligned": true,
+  "years_present": [
+    2025
+  ],
+  "within_requested_year": true,
+  "aggregation_5m": {
+    "h_end_utc": "2025-01-10T20:48:00",
+    "h_end_basis": "последняя минута с is_complete=true + 1 мин (план 8.3.1)",
+    "last_complete_1m_start_utc": "2025-01-10T20:47:00",
+    "bucket_count": 814,
+    "complete_bucket_count": 813,
+    "incomplete_bucket_count": 1,
+    "volume_1m_input": 9769840,
+    "volume_5m_all_buckets": 9769840,
+    "volume_complete_buckets": 9761743,
+    "volume_excluded_incomplete_buckets": 8097,
+    "minutes_seen_all_buckets": 3977,
+    "valid_1m_input_rows": 3977,
+    "minutes_in_complete_buckets": 3974,
+    "minutes_in_excluded_incomplete_buckets": 3,
+    "rows_is_complete_false": 0,
+    "volume_of_incomplete_rows": 0,
+    "volume_of_incomplete_rows_in_excluded_buckets": 0,
+    "incomplete_rows_fully_inside_excluded_buckets": true,
+    "conservation": {
+      "A1_sum_volume_1m_eq_all_buckets": true,
+      "A2_minutes_eq_rows": true,
+      "B1_volume_split_balance": true,
+      "B2_minutes_split_balance": true
+    },
+    "excluded_incomplete_buckets": [
+      {
+        "bucket_start_utc": "2025-01-10T20:45:00",
+        "minutes_seen": 3,
+        "volume": 8097,
+        "rows_is_complete_false": 0,
+        "reason": "tail_window_beyond_horizon"
+      }
+    ],
+    "excluded_total": 1
+  },
+  "day_density": {
+    "day_count": 5,
+    "days": [
+      {
+        "date": "2025-01-06",
+        "first_utc": "07:00:00",
+        "last_utc": "20:50:00",
+        "first_msk": "10:00:00",
+        "last_msk": "23:50:00",
+        "minutes_seen": 796,
+        "span_minutes": 831,
+        "missing_within_span": 35
+      },
+      {
+        "date": "2025-01-07",
+        "first_utc": "07:00:00",
+        "last_utc": "20:50:00",
+        "first_msk": "10:00:00",
+        "last_msk": "23:50:00",
+        "minutes_seen": 796,
+        "span_minutes": 831,
+        "missing_within_span": 35
+      },
+      {
+        "date": "2025-01-08",
+        "first_utc": "07:00:00",
+        "last_utc": "20:50:00",
+        "first_msk": "10:00:00",
+        "last_msk": "23:50:00",
+        "minutes_seen": 796,
+        "span_minutes": 831,
+        "missing_within_span": 35
+      },
+      {
+        "date": "2025-01-09",
+        "first_utc": "07:00:00",
+        "last_utc": "20:50:00",
+        "first_msk": "10:00:00",
+        "last_msk": "23:50:00",
+        "minutes_seen": 796,
+        "span_minutes": 831,
+        "missing_within_span": 35
+      },
+      {
+        "date": "2025-01-10",
+        "first_utc": "07:01:00",
+        "last_utc": "20:47:00",
+        "first_msk": "10:01:00",
+        "last_msk": "23:47:00",
+        "minutes_seen": 793,
+        "span_minutes": 827,
+        "missing_within_span": 34
+      }
+    ]
+  },
+  "blockers": [],
+  "suitable_for_5m_aggregation": true,
+  "verdict_note": "вердикт ограничен этапом 2А: структура и статика одного архива. time_sorted проверен по исходному порядку строк до сортировки; завершённость бакетов — план 8.3.2 (is_complete всех строк И T+5 <= H_end; горизонт только по строкам is_complete=true). НЕ подтверждено на 2А: единицы объёма эмпирически (класс 3, план 10.2), полнота по торговому календарю (класс 4-5, план 10.2; coverage 9.6), суточное обновление (2Б), 429/лимиты (2В), статус sealed года (8.3.2b-альтернатива — вне 2А)",
+  "label": "SYNTHETIC_R1"
+}
