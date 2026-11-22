@@ -1,0 +1,61 @@
+{
+  "script": "fetch_archive_zip.py",
+  "stage": "2A",
+  "created_utc": "2026-11-22T09:35:58.218416+00:00",
+  "mode": "RESEARCH_ONLY / READ_ONLY / NO_LIVE_ORDERS",
+  "requested": {
+    "ticker": "SBER",
+    "year": 2025,
+    "instrument_id_type": "uid",
+    "instrument_id_value": "e6123145-9665-43e0-8413-cd61b8aa9b13",
+    "id_provenance": "TKSBrokerAPI/tests/InstrumentsDump.json (локальный снимок, дата не зафиксирована); лабораторный реестр недоступен; требует сверки по фактическому содержимому архива",
+    "timeframe_source": "1M"
+  },
+  "endpoints_order": [
+    "https://invest-public-api.tbank.ru/history-data",
+    "https://invest-public-api.tinkoff.ru/history-data"
+  ],
+  "token_variable": "TINKOFF_READONLY_TOKEN",
+  "token_available": false,
+  "token_value_saved": false,
+  "self_limit": {
+    "archive_rpm": 20,
+    "marked_as": "self_limit (не лимит API)"
+  },
+  "executed": false,
+  "attempts": [
+    {
+      "endpoint": "https://invest-public-api.tbank.ru/history-data",
+      "attempt": 1,
+      "self_limit_wait_sec": 0.0,
+      "probe_noauth": true,
+      "status": null,
+      "elapsed_sec": 0.652,
+      "size_downloaded": 0,
+      "network_error": "URLError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1011)",
+      "headers_of_interest": {},
+      "marked_as": "non-retryable status"
+    },
+    {
+      "endpoint": "https://invest-public-api.tinkoff.ru/history-data",
+      "attempt": 1,
+      "self_limit_wait_sec": 0.0,
+      "probe_noauth": true,
+      "status": null,
+      "elapsed_sec": 0.586,
+      "size_downloaded": 0,
+      "network_error": "URLError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1011)",
+      "headers_of_interest": {},
+      "marked_as": "non-retryable status"
+    }
+  ],
+  "saved_zip": null,
+  "status_final": null,
+  "reason_not_executed": "все попытки завершились без 200 (см. attempts)",
+  "limiter_snapshot_before": {
+    "self_limit_rpm": 20,
+    "active_in_window": 0,
+    "marked_as": "self_limit (не лимит API)"
+  },
+  "planned_target": "/home/z/my-project/MOEX_HISTORICAL_LAB_2Y/history_api_layer/data/raw_zips/SBER_2025_uid.zip"
+}

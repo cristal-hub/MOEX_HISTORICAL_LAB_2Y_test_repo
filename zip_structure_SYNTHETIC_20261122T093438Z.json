@@ -1,0 +1,324 @@
+{
+  "script": "inspect_zip.py",
+  "stage": "2A",
+  "created_utc": "2026-11-22T09:34:35.626631+00:00",
+  "requested_year": 2025,
+  "synthetic": true,
+  "zip_facts": {
+    "zip_path": "data/demo_fixtures/SBER_2025_SYNTHETIC.zip",
+    "is_zip": true,
+    "crc_ok": true,
+    "members": [
+      {
+        "name": "candles.csv",
+        "size": 361006,
+        "compressed": 45345,
+        "crc32": 676021800,
+        "compress_type": 8
+      }
+    ],
+    "bad_member": null,
+    "file_size": 45465,
+    "sha256": "449d28faa91b224e0cad5d474b468692ba9478b207464aee9107d6f1ac8ea972"
+  },
+  "all_members": [
+    "candles.csv"
+  ],
+  "target_member": "candles.csv",
+  "encoding": {
+    "encoding": "utf-8",
+    "has_bom": false,
+    "decodable": true
+  },
+  "delimiter": "','",
+  "row_count": 3977,
+  "header_present": false,
+  "header_names": [],
+  "data_rows": 3977,
+  "analysis_rows": 3977,
+  "full_mode": true,
+  "columns": {
+    "n_cols": 7,
+    "rows_analyzed": 3977,
+    "columns": [
+      {
+        "index": 0,
+        "uuid_frac": 1.0,
+        "figi_frac": 0.0,
+        "time_frac": 0.0,
+        "int_frac": 0.0,
+        "int_nonneg_frac": 0.0,
+        "decimal_frac": 0.0,
+        "decimal_positive_frac": 0.0,
+        "constant": "e6123145-9665-43e0-8413-cd61b8aa9b13",
+        "top_time_formats": {}
+      },
+      {
+        "index": 1,
+        "uuid_frac": 0.0,
+        "figi_frac": 0.0,
+        "time_frac": 1.0,
+        "int_frac": 0.0,
+        "int_nonneg_frac": 0.0,
+        "decimal_frac": 0.0,
+        "decimal_positive_frac": 0.0,
+        "constant": null,
+        "top_time_formats": {
+          "%Y-%m-%dT%H:%M:%SZ": 3977
+        }
+      },
+      {
+        "index": 2,
+        "uuid_frac": 0.0,
+        "figi_frac": 0.0,
+        "time_frac": 0.0,
+        "int_frac": 0.0,
+        "int_nonneg_frac": 0.0,
+        "decimal_frac": 1.0,
+        "decimal_positive_frac": 1.0,
+        "constant": null,
+        "top_time_formats": {}
+      },
+      {
+        "index": 3,
+        "uuid_frac": 0.0,
+        "figi_frac": 0.0,
+        "time_frac": 0.0,
+        "int_frac": 0.0,
+        "int_nonneg_frac": 0.0,
+        "decimal_frac": 1.0,
+        "decimal_positive_frac": 1.0,
+        "constant": null,
+        "top_time_formats": {}
+      },
+      {
+        "index": 4,
+        "uuid_frac": 0.0,
+        "figi_frac": 0.0,
+        "time_frac": 0.0,
+        "int_frac": 0.0,
+        "int_nonneg_frac": 0.0,
+        "decimal_frac": 1.0,
+        "decimal_positive_frac": 1.0,
+        "constant": null,
+        "top_time_formats": {}
+      },
+      {
+        "index": 5,
+        "uuid_frac": 0.0,
+        "figi_frac": 0.0,
+        "time_frac": 0.0,
+        "int_frac": 0.0,
+        "int_nonneg_frac": 0.0,
+        "decimal_frac": 1.0,
+        "decimal_positive_frac": 1.0,
+        "constant": null,
+        "top_time_formats": {}
+      },
+      {
+        "index": 6,
+        "uuid_frac": 0.0,
+        "figi_frac": 0.0,
+        "time_frac": 0.0,
+        "int_frac": 1.0,
+        "int_nonneg_frac": 1.0,
+        "decimal_frac": 1.0,
+        "decimal_positive_frac": 1.0,
+        "constant": null,
+        "top_time_formats": {}
+      }
+    ]
+  },
+  "roles": {
+    "id": 0,
+    "id_kind": "uid",
+    "id_value": "e6123145-9665-43e0-8413-cd61b8aa9b13",
+    "utc": 1,
+    "volume": 6,
+    "price_columns": [
+      2,
+      3,
+      4,
+      5
+    ],
+    "ohlc_mapping": {
+      "documented_open_close_high_low": {
+        "mapping": {
+          "open": 2,
+          "close": 3,
+          "high": 4,
+          "low": 5
+        },
+        "consistent_rate": 1.0,
+        "rows_checked": 3977
+      },
+      "standard_open_high_low_close": {
+        "mapping": {
+          "open": 2,
+          "high": 3,
+          "low": 4,
+          "close": 5
+        },
+        "consistent_rate": 0.0,
+        "rows_checked": 3977
+      },
+      "chosen": "documented_open_close_high_low",
+      "chosen_rate": 1.0,
+      "ambiguous": false,
+      "matches_documented_order": true
+    }
+  },
+  "id_matches_requested": {
+    "uid": true,
+    "figi": false,
+    "id_kind_detected": "uid",
+    "documented_name_discrepancy_note": "документация расходится в имени первого поля (UID vs FIGI, план 1.2.6); факт: значения колонки сверены с обоими идентификаторами конфига"
+  },
+  "time_facts": {
+    "parsed": 3977,
+    "unparsed": 0,
+    "formats": {
+      "%Y-%m-%dT%H:%M:%SZ": 3977
+    },
+    "tz_aware_strings": 3977,
+    "naive_strings": 0,
+    "second_zero_aligned": 3977,
+    "second_nonzero": 0,
+    "min_ts": "2025-01-06T07:00:00",
+    "max_ts": "2025-01-10T20:47:00",
+    "out_of_year": 0,
+    "duplicate_ts": 0,
+    "duplicate_ts_conflicting": 0,
+    "exact_row_duplicates": 0,
+    "duplicate_ts_total_rows": 3977
+  },
+  "duplicate_conflict_scan": {
+    "duplicate_ts_groups": 0,
+    "conflicting_groups": 0
+  },
+  "day_session_stats": {
+    "day_count": 5,
+    "days_first50": [
+      {
+        "date": "2025-01-06",
+        "first_utc_hyp": "07:00:00",
+        "last_utc_hyp": "20:50:00",
+        "minutes_seen": 796
+      },
+      {
+        "date": "2025-01-07",
+        "first_utc_hyp": "07:00:00",
+        "last_utc_hyp": "20:50:00",
+        "minutes_seen": 796
+      },
+      {
+        "date": "2025-01-08",
+        "first_utc_hyp": "07:00:00",
+        "last_utc_hyp": "20:50:00",
+        "minutes_seen": 796
+      },
+      {
+        "date": "2025-01-09",
+        "first_utc_hyp": "07:00:00",
+        "last_utc_hyp": "20:50:00",
+        "minutes_seen": 796
+      },
+      {
+        "date": "2025-01-10",
+        "first_utc_hyp": "07:01:00",
+        "last_utc_hyp": "20:47:00",
+        "minutes_seen": 793
+      }
+    ],
+    "tz_plausibility_counts": {
+      "as_utc": 1,
+      "as_msk": 0
+    },
+    "tz_hypothesis_preferred": "UTC",
+    "reference_windows_msk": {
+      "main_open_earliest": "09:45",
+      "main_close_typical": "18:45",
+      "evening_open_earliest": "19:00",
+      "evening_close_latest": "23:50"
+    },
+    "note": "окна — справочник правдоподобия, не календарь торгов; особые/короткие сессии дают менее строгие границы"
+  },
+  "gap_stats": {
+    "days": 5,
+    "top_missing_within_span": [
+      {
+        "missing_minutes": 35,
+        "date": "2025-01-09",
+        "minutes_seen": 796
+      },
+      {
+        "missing_minutes": 35,
+        "date": "2025-01-08",
+        "minutes_seen": 796
+      },
+      {
+        "missing_minutes": 35,
+        "date": "2025-01-07",
+        "minutes_seen": 796
+      },
+      {
+        "missing_minutes": 35,
+        "date": "2025-01-06",
+        "minutes_seen": 796
+      },
+      {
+        "missing_minutes": 34,
+        "date": "2025-01-10",
+        "minutes_seen": 793
+      }
+    ],
+    "total_missing_within_spans": 174,
+    "note": "пропуск внутри span != дефект: минута без сделок может отсутствовать; различение — сверка источников (классы 4-5, план 10.2)"
+  },
+  "numeric_facts": {
+    "volume": {
+      "count": 3977,
+      "min": 1,
+      "max": 5000,
+      "sum": 9769840,
+      "zero_count": 0,
+      "all_nonneg": true,
+      "documented_unit_hypothesis": "lots",
+      "unit_verified": false,
+      "unit_note": "единицы эмпирически не проверены; сверка с GetCandles (класс 3, план 10.2) вне объёма этапа 2А"
+    },
+    "prices": {
+      "columns": [
+        2,
+        3,
+        4,
+        5
+      ],
+      "decimal_places_distribution": {
+        "2": 15796,
+        "0": 112
+      },
+      "unparseable_price_cells": 0,
+      "min_price_increment_config": "0.01"
+    }
+  },
+  "field_order_vs_documentation": {
+    "documented": [
+      "UID",
+      "UTC",
+      "open",
+      "close",
+      "high",
+      "low",
+      "volume"
+    ],
+    "matches_documented_order": true,
+    "chosen_mapping": "documented_open_close_high_low",
+    "ambiguous": false,
+    "consistent_rates": {
+      "documented_open_close_high_low": 1.0,
+      "standard_open_high_low_close": 0.0
+    }
+  },
+  "label": "SYNTHETIC"
+}
