@@ -21,11 +21,24 @@
 # - запись — tmp+rename в том же каталоге (атомарность файла);
 # - при отсутствии токена HTTP-запрос НЕ выполняется (fail-closed),
 #   вместо него создаётся честная запись меты executed=false;
-# - самодиагностика ZIP: размер тела == Content-Length, CRC всех членов.
+# - самодиагностика ZIP: размер тела == Content-Length, CRC всех членов;
+# - сетевые тайм-ауты (TimeoutError / socket.timeout) перехватываются
+#   штатно: НЕ маскируются под HTTP-статус, НЕ ретраятся, сбор меты
+#   не прерывают; неполный .part текущего запуска удаляется точечно
+#   (TIMEOUT HANDLING FIX, задание 3.1-3.4);
+# - PART FILE CLEANUP AUDIT: принадлежность .part текущему запуску
+#   доказывается точно — .part, существовавший до первой попытки ЭТОГО
+#   запуска, не открывается (не усекается) и не удаляется; текущий запуск
+#   в этом случае пишет в уникальный временный файл
+#   <имя>.part.<UTC-stamp>.<pid>, удаляемый только по этому точному пути
+#   при любом неуспешном завершении (включая HTTP 404 и ранние возвраты,
+#   гарантируется try/finally). Итоговый ZIP и чужие файлы не затрагиваются.
 # ============================================================
 
 import argparse
 import json
+import os
+import socket
 import sys
 import time
 import urllib.error
@@ -79,6 +92,10 @@ def http_get_stream(url: str, token: str | None, out_tmp: Path,
 
     Тело пишется в out_tmp потоком. Возвращает факт-словарь
     (status/headers/size). Токен не логируется.
+    Сетевой тайм-аут (TimeoutError / socket.timeout) возвращает
+    структурированный результат: status=None, headers={},
+    network_error + error_type="timeout" — без маскировки
+    под HTTP-статус.
     """
     request = urllib.request.Request(url, method="GET")
     request.add_header("Accept", "*/*")
@@ -133,6 +150,22 @@ def http_get_stream(url: str, token: str | None, out_tmp: Path,
             "size_downloaded": size_downloaded,
             "network_error": f"{cause_name}: {reason}",
         }
+    except (TimeoutError, socket.timeout) as exc:
+        # Задание 3.1: сетевой тайм-аут (в т.ч. «The read operation timed
+        # out» при чтении тела) перехватывается штатно и НЕ маскируется
+        # под HTTP-статус. socket.timeout может совпадать с TimeoutError
+        # (алиас в Python >= 3.10) — кортеж покрывает оба написания.
+        # Повтор здесь не выполняется: решение принимает run_fetch
+        # (ветка error_type == "timeout", задание 3.2).
+        elapsed = round(time.monotonic() - started, 3)
+        return {
+            "status": None,
+            "headers": {},
+            "elapsed_sec": elapsed,
+            "size_downloaded": size_downloaded,
+            "network_error": f"{type(exc).__name__}: {exc}",
+            "error_type": "timeout",
+        }
     elapsed = round(time.monotonic() - started, 3)
     return {
         "status": status,
@@ -178,6 +211,34 @@ def pick_endpoint(explicit: str | None) -> list[str]:
     return list(cfg.HISTORY_ENDPOINTS)
 
 
+def cleanup_part_file(tmp_path: Path) -> dict:
+    """Задание 3.4 + PART FILE CLEANUP AUDIT: удалить .part ТОЛЬКО текущего запуска.
+
+    Принадлежность текущему запуску определяет ВЫЗЫВАЮЩИЙ (run_fetch):
+    передаётся ровно тот путь, в который ЭТОТ запуск писал тело
+    (final_path.name + '.part', а при обнаружении .part предыдущего
+    запуска — уникальный <имя>.part.<UTC-stamp>.<pid>). .part,
+    существовавший до начала запуска, имеет ДРУГОЙ путь и поэтому
+    принципиально не может быть удалён этой функцией.
+
+    Двойной предохранитель:
+    - удаляется ровно один файл по точному пути (никакого glob/широкой
+      очистки каталога);
+    - имя обязано содержать '.part': итоговый ZIP (.zip) и любые
+      посторонние имена через эту функцию удалить невозможно.
+    """
+    result = {"path": tmp_path.name, "removed": False, "skipped_reason": None}
+    if ".part" not in tmp_path.name:
+        # Защита от ошибки вызова: cleanup не имеет права трогать
+        # итоговый ZIP или посторонний файл.
+        result["skipped_reason"] = "guard: имя не содержит .part"
+        return result
+    if tmp_path.exists():
+        tmp_path.unlink()
+        result["removed"] = True
+    return result
+
+
 def run_fetch(args) -> dict:
     """Основная логика. Возвращает мету запуска (без секретов)."""
     year = int(args.year)
@@ -218,6 +279,7 @@ def run_fetch(args) -> dict:
     }
     limiter = common.SlidingWindowRateLimiter(cfg.SELF_LIMIT_ARCHIVE_RPM)
     meta["limiter_snapshot_before"] = limiter.snapshot()
+    timeout_count = 0  # попытки с error_type=timeout (для причины незавершения)
 
     token = None
     if args.probe_noauth:
@@ -248,113 +310,183 @@ def run_fetch(args) -> dict:
     # и отсутствие каталога не должно срывать загрузку на первом байте
     cfg.RAW_ZIPS_DIR.mkdir(parents=True, exist_ok=True)
 
-    for endpoint in endpoints:
-        for attempt in range(1, cfg.MAX_HTTP_ATTEMPTS + 1):
-            wait = limiter.acquire()
-            # P0: параметры year и instrument_id уходят СЕРВЕРУ в URL
-            url = build_request_url(endpoint, id_value, year)
-            attempt_meta = {
-                "endpoint": endpoint,
-                "url": url,
-                "request_method": "GET",
-                "request_query": {
-                    "instrument_id": id_value,
-                    "year": year,
-                },
-                "attempt": attempt,
-                "self_limit_wait_sec": round(wait, 2),
-                "probe_noauth": bool(args.probe_noauth),
-            }
-            meta["attempts"].append(attempt_meta)
-            common.log(
-                f"GET {url} attempt={attempt}"
-                f"{ ' (NOAUTH probe)' if args.probe_noauth else '' }"
-            )
-            result = http_get_stream(
-                url,
-                None if args.probe_noauth else token,
-                tmp_path,
-                cfg.REQUEST_TIMEOUT_SEC,
-            )
-            attempt_meta.update({k: v for k, v in result.items() if k != "headers"})
-            attempt_meta["headers_of_interest"] = {
-                h: result["headers"].get(h)
-                for h in ("Content-Type", "Content-Length", "Content-Disposition",
-                          "Retry-After", "x-ratelimit-limit", "x-ratelimit-remaining",
-                          "x-ratelimit-reset", "Date")
-                if result["headers"].get(h) is not None
-            }
-            status = result.get("status")
-            common.log(f"HTTP {status}, downloaded={result.get('size_downloaded')} bytes")
+    # PART FILE CLEANUP AUDIT (P1): принадлежность .part определяется
+    # ДО первой сетевой попытки. Файл с фиксированным именем, уже
+    # существующий в этот момент, создан НЕ текущим запуском (например,
+    # остался после жёстко прерванного запуска): он не открывается
+    # (не усекается) и не удаляется — это факт окружения, а не мусор
+    # текущего запуска. Чтобы принадлежность временного файла текущего
+    # запуска оставалась доказуемой точно, в этом случае используется
+    # УНИКАЛЬНОЕ имя <имя>.part.<UTC-stamp>.<pid>[.<n>]: у предыдущего
+    # и текущего запусков разные пути, пересечение невозможно.
+    part_preexisting = tmp_path.exists()
+    meta["part_preexisting"] = part_preexisting
+    meta["tmp_file"] = tmp_path.name
+    if part_preexisting:
+        stamp = common.utc_now().strftime("%Y%m%dT%H%M%SZ")
+        unique_base = tmp_path.name + f".{stamp}.{os.getpid()}"
+        candidate = cfg.RAW_ZIPS_DIR / unique_base
+        rotation = 0
+        while candidate.exists():
+            rotation += 1
+            candidate = cfg.RAW_ZIPS_DIR / f"{unique_base}.{rotation}"
+        tmp_path = candidate
+        meta["tmp_file"] = tmp_path.name
+        meta["part_preexisting_note"] = (
+            "обнаружен .part предыдущего запуска по фиксированному имени; "
+            "он не открывался, не усекался и не удалялся; тело текущего "
+            "запуска пишется в уникальный временный файл tmp_file"
+        )
 
-            if status == 200:
-                if args.probe_noauth:
-                    attempt_meta["marked_as"] = (
-                        "unexpected 200 without auth (probe only, "
-                        "ZIP не сохраняется)"
-                    )
-                    meta["http_requests_made"] = len(meta["attempts"])
-                    break
-                content_length = result["headers"].get("Content-Length")
-                size = result.get("size_downloaded", 0)
-                if content_length is not None and int(content_length) != size:
-                    attempt_meta["verify"] = "content_length_mismatch"
-                    common.log("Content-Length != downloaded size — бракую загрузку")
-                    break
-                integrity = verify_zip_integrity(tmp_path)
-                attempt_meta["zip_integrity"] = integrity
-                if not (integrity["is_zip"] and integrity["crc_ok"]):
-                    common.log("ZIP-интегрити не пройден — бракую загрузку")
-                    break
-                cfg.RAW_ZIPS_DIR.mkdir(parents=True, exist_ok=True)
-                if final_path.exists() and not args.allow_overwrite:
-                    meta["reason_not_executed"] = "NO_OVERWRITE: файл появился во время загрузки"
+    saved_ok = False  # временный файл ЭТОГО запуска стал итоговым ZIP
+    try:
+        for endpoint in endpoints:
+            for attempt in range(1, cfg.MAX_HTTP_ATTEMPTS + 1):
+                wait = limiter.acquire()
+                # P0: параметры year и instrument_id уходят СЕРВЕРУ в URL
+                url = build_request_url(endpoint, id_value, year)
+                attempt_meta = {
+                    "endpoint": endpoint,
+                    "url": url,
+                    "request_method": "GET",
+                    "request_query": {
+                        "instrument_id": id_value,
+                        "year": year,
+                    },
+                    "attempt": attempt,
+                    "self_limit_wait_sec": round(wait, 2),
+                    "probe_noauth": bool(args.probe_noauth),
+                }
+                meta["attempts"].append(attempt_meta)
+                common.log(
+                    f"GET {url} attempt={attempt}"
+                    f"{ ' (NOAUTH probe)' if args.probe_noauth else '' }"
+                )
+                result = http_get_stream(
+                    url,
+                    None if args.probe_noauth else token,
+                    tmp_path,
+                    cfg.REQUEST_TIMEOUT_SEC,
+                )
+                attempt_meta.update({k: v for k, v in result.items() if k != "headers"})
+                attempt_meta["headers_of_interest"] = {
+                    h: result["headers"].get(h)
+                    for h in ("Content-Type", "Content-Length", "Content-Disposition",
+                              "Retry-After", "x-ratelimit-limit", "x-ratelimit-remaining",
+                              "x-ratelimit-reset", "Date")
+                    if result["headers"].get(h) is not None
+                }
+                status = result.get("status")
+                common.log(f"HTTP {status}, downloaded={result.get('size_downloaded')} bytes")
+
+                if status == 200:
+                    if args.probe_noauth:
+                        attempt_meta["marked_as"] = (
+                            "unexpected 200 without auth (probe only, "
+                            "ZIP не сохраняется)"
+                        )
+                        meta["http_requests_made"] = len(meta["attempts"])
+                        break
+                    content_length = result["headers"].get("Content-Length")
+                    size = result.get("size_downloaded", 0)
+                    if content_length is not None and int(content_length) != size:
+                        attempt_meta["verify"] = "content_length_mismatch"
+                        common.log("Content-Length != downloaded size — бракую загрузку")
+                        break
+                    integrity = verify_zip_integrity(tmp_path)
+                    attempt_meta["zip_integrity"] = integrity
+                    if not (integrity["is_zip"] and integrity["crc_ok"]):
+                        common.log("ZIP-интегрити не пройден — бракую загрузку")
+                        break
+                    cfg.RAW_ZIPS_DIR.mkdir(parents=True, exist_ok=True)
+                    if final_path.exists() and not args.allow_overwrite:
+                        meta["reason_not_executed"] = "NO_OVERWRITE: файл появился во время загрузки"
+                        meta["http_requests_made"] = len(meta["attempts"])
+                        # Очистку .part выполняет finally (P2): единая
+                        # гарантия для любого неуспешного завершения
+                        return meta
+                    tmp_path.replace(final_path)
+                    saved_ok = True   # временный файл ЭТОГО запуска переименован
+                    meta["executed"] = True
+                    meta["saved_zip"] = str(final_path)
+                    meta["sha256"] = common.sha256_file(final_path)
+                    meta["status_final"] = 200
                     meta["http_requests_made"] = len(meta["attempts"])
                     return meta
-                tmp_path.replace(final_path)
-                meta["executed"] = True
-                meta["saved_zip"] = str(final_path)
-                meta["sha256"] = common.sha256_file(final_path)
-                meta["status_final"] = 200
-                meta["http_requests_made"] = len(meta["attempts"])
-                return meta
 
-            if status == 429:
-                retry_after = result["headers"].get("Retry-After")
-                try:
-                    pause = float(retry_after) if retry_after is not None \
-                        else cfg.DEFAULT_RETRY_AFTER_SEC
-                except ValueError:
-                    pause = cfg.DEFAULT_RETRY_AFTER_SEC
-                pause = min(pause, cfg.RETRY_429_BACKOFF_CAP_SEC)
-                attempt_meta["pause_429_sec"] = pause
-                attempt_meta["marked_as"] = "429 -> уважение Retry-After (или 5с по скрипту-примеру)"
-                common.log(f"429: пауза {pause:.1f} c и повтор")
-                time.sleep(pause)
-                continue
+                if status == 429:
+                    retry_after = result["headers"].get("Retry-After")
+                    try:
+                        pause = float(retry_after) if retry_after is not None \
+                            else cfg.DEFAULT_RETRY_AFTER_SEC
+                    except ValueError:
+                        pause = cfg.DEFAULT_RETRY_AFTER_SEC
+                    pause = min(pause, cfg.RETRY_429_BACKOFF_CAP_SEC)
+                    attempt_meta["pause_429_sec"] = pause
+                    attempt_meta["marked_as"] = "429 -> уважение Retry-After (или 5с по скрипту-примеру)"
+                    common.log(f"429: пауза {pause:.1f} c и повтор")
+                    time.sleep(pause)
+                    continue
 
-            if status == 404:
-                # План 13.5: 404 — ожидаемое поведение «нет архива за год»,
-                # фиксируется фактом; статус-кандидат absent_404.
-                attempt_meta["marked_as"] = "404: кандидат absent_404 (ожидание, план 13.5)"
-                meta["status_final"] = 404
-                meta["reason_not_executed"] = (
-                    "HTTP 404: архив за запрошенный год не найден "
-                    "(кандидат absent_404; подтверждение фактом — задача 2А/2Б)"
-                )
-                meta["http_requests_made"] = len(meta["attempts"])
-                return meta
+                if status == 404:
+                    # План 13.5: 404 — ожидаемое поведение «нет архива за год»,
+                    # фиксируется фактом; статус-кандидат absent_404.
+                    # P2: возврат идёт через finally — временный файл
+                    # текущего запуска очищается и здесь (ранний возврат
+                    # больше не пропускает очистку).
+                    attempt_meta["marked_as"] = "404: кандидат absent_404 (ожидание, план 13.5)"
+                    meta["status_final"] = 404
+                    meta["reason_not_executed"] = (
+                        "HTTP 404: архив за запрошенный год не найден "
+                        "(кандидат absent_404; подтверждение фактом — задача 2А/2Б)"
+                    )
+                    meta["http_requests_made"] = len(meta["attempts"])
+                    return meta
 
-            # 401/403/5xx/прочее: фиксирование и следующий эндпоинт
-            attempt_meta["marked_as"] = "non-retryable status"
-            break
+                if result.get("error_type") == "timeout":
+                    # Задание 3.2: тайм-аут — НЕ HTTP-статус и НЕ повод для
+                    # авторетрая: фиксируется понятный marked_as, повторов нет,
+                    # переход к следующему эндпоинту по текущей архитектуре
+                    # сетевых ошибок (как для прочих невозвратных исходов).
+                    attempt_meta["marked_as"] = "timeout_non_retryable"
+                    timeout_count += 1
+                    common.log(
+                        "Timeout: HTTP-статус не получен; авторетрай тайм-аутов "
+                        "запрещён заданием (п. 3.2) — переход к следующему эндпоинту"
+                    )
+                    break
 
-        if meta["executed"]:
-            break
+                # 401/403/5xx/прочее: фиксирование и следующий эндпоинт
+                attempt_meta["marked_as"] = "non-retryable status"
+                break
+
+            if meta["executed"]:
+                break
+
+    finally:
+        # PART FILE CLEANUP AUDIT (P2): очистка временного файла ТЕКУЩЕГО
+        # запуска выполняется при ЛЮБОМ неуспешном завершении попыток:
+        # ранний возврат по HTTP 404, неожиданный 200 в probe-режиме,
+        # тайм-аут, невозвратный статус, исчерпание 429-попыток и даже
+        # непредвиденное исключение. saved_ok=True означает, что временный
+        # файл уже атомарно переименован в итоговый ZIP — удалять нечего
+        # и нечего фиксировать (прежняя семантика успешного пути).
+        # Удаляется ровно путь tmp_path текущего запуска: .part предыдущего
+        # запуска (другое имя), итоговый ZIP и чужие файлы не затрагиваются.
+        if not saved_ok:
+            meta["part_file_cleanup"] = cleanup_part_file(tmp_path)
 
     if not meta["executed"] and meta["status_final"] != 404:
-        meta["reason_not_executed"] = meta.get("reason_not_executed") or \
-            "все попытки завершились без 200 (см. attempts)"
+        if timeout_count:
+            meta["reason_not_executed"] = (
+                f"сетевой тайм-аут в {timeout_count} из {len(meta['attempts'])} "
+                "попыток (error_type=timeout, HTTP-статус не получен); "
+                "авторетрай тайм-аутов запрещён заданием (п. 3.2); "
+                "повторная загрузка — новый запуск скрипта"
+            )
+        else:
+            meta["reason_not_executed"] = meta.get("reason_not_executed") or \
+                "все попытки завершились без 200 (см. attempts)"
 
     # P3: фактическое число выполненных GET-попыток (<= http_requests_max_possible)
     meta["http_requests_made"] = len(meta["attempts"])
