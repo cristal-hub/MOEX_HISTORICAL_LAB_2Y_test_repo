@@ -1,0 +1,101 @@
+--- stage2/fetch_archive_zip.py	2026-11-23 18:11:36.767957044 +0000
++++ /home/z/my-project/MOEX_HISTORICAL_LAB_2Y/history_api_layer/fetch_archive_zip.py	2026-11-23 18:08:04.498737450 +0000
+@@ -60,7 +60,11 @@
+     parser.add_argument("--endpoint", default=None,
+                         help="явный URL эндпоинта; по умолчанию — перебор HISTORY_ENDPOINTS")
+     parser.add_argument("--id-type", choices=["uid", "figi"], default="uid",
+-                        help="тип идентификатора для instrument_id (figi deprecated)")
++                        help="тип идентификатора: 'uid' -> query-параметр "
++                             "instrument_id=UID; 'figi' -> query-параметр figi=FIGI "
++                             "(воспроизводит проверенный боевой запрос "
++                             "GET /history-data?figi=BBG004730N88&year=2025 -> "
++                             "HTTP 200)")
+     parser.add_argument("--id-value", default=None,
+                         help="значение идентификатора; по умолчанию — из hal_config.INSTRUMENT")
+     parser.add_argument("--probe-noauth", action="store_true",
+@@ -71,16 +75,48 @@
+     return parser
+ 
+ 
+-def build_request_url(endpoint: str, instrument_id: str, year: int) -> str:
++def _id_param_name(id_type: str) -> str:
++    """Имя query-параметра сервера History API по типу идентификатора.
++
++    Исторически сервер T-Invest History API принимает идентификатор
++    инструмента двумя разными query-параметрами в зависимости от его типа:
++      - 'uid'  -> параметр 'instrument_id' (значение UID, как в конфиге);
++      - 'figi' -> параметр 'figi' (значение FIGI; figi помечен в API как
++                  deprecated для instrument_id, но сервер ожидает именно
++                  figi=... — иначе проверенный боевой запрос
++                  GET /history-data?figi=BBG004730N88&year=2025
++                  не возвращал архив).
++    Любое иное значение id_type — явная ошибка программирования
++    (argparse ограничивает choices, но функция защищена и от прямого
++    вызова с неверным аргументом).
++    """
++    if id_type == "uid":
++        return "instrument_id"
++    if id_type == "figi":
++        return "figi"
++    raise ValueError(
++        f"unknown id_type: {id_type!r} (expected 'uid' or 'figi')"
++    )
++
++
++def build_request_url(endpoint: str, id_type: str, id_value: str,
++                       year: int) -> str:
+     """Полный GET URL History API: endpoint + обязательные query-параметры.
+ 
+-    Параметры instrument_id (uid или figi) и year передаются СЕРВЕРУ
+-    именно в URL (urllib.parse.urlencode — корректное кодирование);
+-    токен в URL не попадает никогда (только заголовок Authorization,
+-    см. http_get_stream). TLS-проверка не отключается, метод — GET.
++    Имя параметра идентификатора выбирается по id_type:
++      - 'uid'  -> instrument_id=UID
++      - 'figi' -> figi=FIGI
++    (воспроизводит проверенный боевой запрос
++      GET https://invest-public-api.tbank.ru/history-data?figi=BBG004730N88&year=2025
++    — HTTP 200 через боевой Read-only токен).
++    Параметр year передаётся в обоих случаях. URL кодируется
++    urllib.parse.urlencode (корректное экранирование специальных символов
++    в значениях). Токен в URL не попадает никогда — только заголовок
++    Authorization (см. http_get_stream). TLS-проверка не отключается,
++    метод — GET.
+     """
+     query = urllib.parse.urlencode({
+-        "instrument_id": instrument_id,
++        _id_param_name(id_type): id_value,
+         "year": int(year),
+     })
+     return f"{endpoint}?{query}"
+@@ -246,6 +282,11 @@
+     # instrument_id: явное --id-value или фактическое значение конфига
+     # для выбранного типа идентификатора (uid | figi)
+     id_value = args.id_value or cfg.INSTRUMENT[id_type]
++    # Имя query-параметра сервера зависит от типа идентификатора:
++    # uid -> instrument_id, figi -> figi (см. _id_param_name). Это имя
++    # уходит в URL каждой попытки и в request_query меты — одно и то же,
++    # без расхождений между фактическим запросом и записанной метой.
++    id_param_name = _id_param_name(id_type)
+     ticker = cfg.INSTRUMENT["ticker"]
+     endpoints = pick_endpoint(args.endpoint)
+     meta = {
+@@ -343,14 +384,15 @@
+         for endpoint in endpoints:
+             for attempt in range(1, cfg.MAX_HTTP_ATTEMPTS + 1):
+                 wait = limiter.acquire()
+-                # P0: параметры year и instrument_id уходят СЕРВЕРУ в URL
+-                url = build_request_url(endpoint, id_value, year)
++                # P0: параметры year и идентификатор (instrument_id или figi
++                # — по id_type) уходят СЕРВЕРУ в URL.
++                url = build_request_url(endpoint, id_type, id_value, year)
+                 attempt_meta = {
+                     "endpoint": endpoint,
+                     "url": url,
+                     "request_method": "GET",
+                     "request_query": {
+-                        "instrument_id": id_value,
++                        id_param_name: id_value,
+                         "year": year,
+                     },
+                     "attempt": attempt,

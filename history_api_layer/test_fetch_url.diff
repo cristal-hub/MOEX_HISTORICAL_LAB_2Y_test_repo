@@ -1,0 +1,196 @@
+--- /home/z/my-project/download/history_api_layer/tests/test_fetch_url.py	2026-11-22 10:10:03.000000000 +0000
++++ /home/z/my-project/MOEX_HISTORICAL_LAB_2Y/history_api_layer/tests/test_fetch_url.py	2026-11-23 18:12:14.532187702 +0000
+@@ -2,12 +2,16 @@
+ # Этап 2А, тесты раунда ревью 1 (P0): формирование GET URL
+ #
+ # Требования задания:
+-# 1. instrument_id присутствует в ФАКТИЧЕСКОМ URL запроса.
++# 1. instrument_id присутствует в ФАКТИЧЕСКОМ URL запроса (uid).
+ # 2. В URL уходит ПРАВИЛЬНОЕ значение UID.
+ # 3. year присутствует в URL.
+-# 4. --id-type figi работает корректно.
++# 4. --id-type figi работает корректно: параметр figi=FIGI (а не
++#    instrument_id=FIGI — именно так сервер находит архив за год;
++#    воспроизводит проверенный боевой запрос
++#    GET /history-data?figi=BBG004730N88&year=2025 -> HTTP 200).
+ # 5. --id-value работает корректно.
+ # 6. Токен отсутствует в URL, логах и метаданных.
++# 7. Специальные символы в --id-value корректно URL-кодируются.
+ # Дополнительно (P3): число HTTP-попыток ограничено и точно учитывается.
+ #
+ # Сеть не используется: urllib.request.urlopen подменяется перехватчиком,
+@@ -116,18 +120,69 @@
+     return urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+ 
+ 
+-# ---------- 1-3: instrument_id и year в фактическом URL ----------
++# ---------- 1-3: instrument_id и year в фактическом URL (uid) ----------
+ 
+ def test_url_contains_instrument_id_and_year(fetch_env):
+     fetch = fetch_env["fetch"]
+     url = fetch.build_request_url(
+         "https://invest-public-api.tbank.ru/history-data",
+-        fetch_env["cfg"].INSTRUMENT["uid"], 2025)
++        "uid", fetch_env["cfg"].INSTRUMENT["uid"], 2025)
+     parsed = urllib.parse.urlparse(url)
+     assert parsed.path == "/history-data"
+     q = urllib.parse.parse_qs(parsed.query)
+     assert q["instrument_id"] == [fetch_env["cfg"].INSTRUMENT["uid"]]
+     assert q["year"] == ["2025"]
++    # uid -> только instrument_id, figi-параметра в URL нет
++    assert "figi" not in q
++
++
++def test_build_request_url_figi_uses_figi_param(fetch_env):
++    """Прямая проверка build_request_url для figi: параметр figi=FIGI,
++    параметра instrument_id в URL нет (имя параметра зависит от id_type)."""
++    fetch = fetch_env["fetch"]
++    url = fetch.build_request_url(
++        "https://invest-public-api.tbank.ru/history-data",
++        "figi", fetch_env["cfg"].INSTRUMENT["figi"], 2025)
++    parsed = urllib.parse.urlparse(url)
++    assert parsed.path == "/history-data"
++    q = urllib.parse.parse_qs(parsed.query)
++    assert q["figi"] == [fetch_env["cfg"].INSTRUMENT["figi"]]
++    assert q["year"] == ["2025"]
++    # figi -> только figi, instrument_id-параметра в URL нет
++    assert "instrument_id" not in q
++
++
++def test_build_request_url_matches_canonical_figi_request(fetch_env):
++    """Воспроизведение проверенного боевого запроса (задание):
++        GET https://invest-public-api.tbank.ru/history-data?figi=BBG004730N88&year=2025
++    — HTTP 200 через боевой Read-only токен. Параметры в URL — ровно те
++    и в том виде, как задаёт canonical reference."""
++    fetch = fetch_env["fetch"]
++    url = fetch.build_request_url(
++        "https://invest-public-api.tbank.ru/history-data",
++        "figi", "BBG004730N88", 2025)
++    parsed = urllib.parse.urlparse(url)
++    assert parsed.scheme == "https"
++    assert parsed.hostname == "invest-public-api.tbank.ru"
++    assert parsed.path == "/history-data"
++    q = urllib.parse.parse_qs(parsed.query)
++    assert q == {"figi": ["BBG004730N88"], "year": ["2025"]}
++
++
++def test_id_param_name_unknown_raises_value_error(fetch_env):
++    """Защита от прямой передачи неверного id_type: явный ValueError
++    с понятным сообщением, а не тихое формирование кривого URL."""
++    fetch = fetch_env["fetch"]
++    with pytest.raises(ValueError) as exc_info:
++        fetch._id_param_name("bogus")
++    msg = str(exc_info.value)
++    assert "bogus" in msg
++    assert "uid" in msg and "figi" in msg
++    # и build_request_url должен пробросить ту же ошибку
++    with pytest.raises(ValueError):
++        fetch.build_request_url(
++            "https://invest-public-api.tbank.ru/history-data",
++            "bogus", "whatever", 2025)
+ 
+ 
+ def test_run_fetch_sends_uid_and_year_in_real_url(fetch_env, http_log):
+@@ -174,6 +229,11 @@
+ # ---------- 4: --id-type figi ----------
+ 
+ def test_id_type_figi_uses_figi_value(fetch_env, http_log):
++    """--id-type figi: серверный параметр figi=FIGI (а НЕ instrument_id=FIGI).
++    Воспроизводит проверенный боевой запрос
++      GET /history-data?figi=BBG004730N88&year=2025 -> HTTP 200.
++    Параметр year также присутствует.
++    """
+     fetch = fetch_env["fetch"]
+     http_log["plan"] = [_ok_response]
+     args = fetch.build_arg_parser().parse_args(["--id-type", "figi"])
+@@ -183,7 +243,18 @@
+     assert meta["requested"]["instrument_id_value"] == \
+         fetch_env["cfg"].INSTRUMENT["figi"]
+     q = _query_of(http_log["requests"][0]["url"])
+-    assert q["instrument_id"] == [fetch_env["cfg"].INSTRUMENT["figi"]]
++    # figi=FIGI (имя параметра зависит от id_type)
++    assert q["figi"] == [fetch_env["cfg"].INSTRUMENT["figi"]]
++    # instrument_id в URL отсутствует — иначе сервер не нашёл бы архив
++    assert "instrument_id" not in q
++    # year присутствует в обоих случаях (uid и figi)
++    assert q["year"] == ["2025"]
++    # request_query в мете также использует figi (а не instrument_id),
++    # без расхождения с фактическим URL
++    assert meta["attempts"][0]["request_query"]["figi"] == \
++        fetch_env["cfg"].INSTRUMENT["figi"]
++    assert "instrument_id" not in meta["attempts"][0]["request_query"]
++    assert meta["attempts"][0]["request_query"]["year"] == 2025
+ 
+ 
+ # ---------- 5: --id-value ----------
+@@ -201,6 +272,70 @@
+     assert q["instrument_id"] == [custom]
+ 
+ 
++def test_id_value_override_with_figi_param_name(fetch_env, http_log):
++    """--id-value + --id-type figi: значение уходит в параметр figi=...,
++    а не в instrument_id=... (имя параметра зависит от id_type, а не от
++    значения --id-value)."""
++    fetch = fetch_env["fetch"]
++    http_log["plan"] = [_ok_response]
++    custom_figi = "BBG000CLRAV1"
++    args = fetch.build_arg_parser().parse_args(
++        ["--id-value", custom_figi, "--id-type", "figi"])
++    meta = fetch.run_fetch(args)
++    assert meta["executed"] is True
++    q = _query_of(http_log["requests"][0]["url"])
++    assert q["figi"] == [custom_figi]
++    assert "instrument_id" not in q
++    assert q["year"] == ["2025"]
++
++
++# ---------- 7: специальные символы корректно URL-кодируются ----------
++
++def test_id_value_with_special_chars_is_url_encoded(fetch_env, http_log):
++    """Специальные символы в --id-value корректно кодируются
++    urllib.parse.urlencode: декодированное значение сохраняется,
++    «голых» разделителей внутри значения нет (только между параметрами)."""
++    fetch = fetch_env["fetch"]
++    http_log["plan"] = [_ok_response]
++    special = "weird&id value=with+special;chars"
++    args = fetch.build_arg_parser().parse_args(
++        ["--id-value", special, "--id-type", "uid"])
++    meta = fetch.run_fetch(args)
++    assert meta["executed"] is True
++    url = http_log["requests"][0]["url"]
++    q = _query_of(url)
++    # декодированное значение совпадает с исходным (round-trip)
++    assert q["instrument_id"] == [special]
++    assert q["year"] == ["2025"]
++    # «голой» амперсанд в URL только ОДИН — между instrument_id и year;
++    # внутри значения & закодирован как %26
++    assert url.count("&") == 1
++    # «голой» пробел в URL отсутствует (urlencode кодирует его как +)
++    assert " " not in url
++    # «голой» '=' в URL только два (после instrument_id и после year);
++    # внутри значения '=' закодирован как %3D
++    assert url.count("=") == 2
++
++
++def test_figi_value_with_special_chars_is_url_encoded(fetch_env, http_log):
++    """То же для figi: специальные символы в --id-value при --id-type figi
++    кодируются в параметр figi=... и декодируются без потерь."""
++    fetch = fetch_env["fetch"]
++    http_log["plan"] = [_ok_response]
++    special = "BBG 00&47=30+N88;"
++    args = fetch.build_arg_parser().parse_args(
++        ["--id-value", special, "--id-type", "figi"])
++    meta = fetch.run_fetch(args)
++    assert meta["executed"] is True
++    url = http_log["requests"][0]["url"]
++    q = _query_of(url)
++    assert q["figi"] == [special]
++    assert q["year"] == ["2025"]
++    assert " " not in url
++    assert url.count("&") == 1
++    assert "instrument_id" not in q
++
++
+ # ---------- 6: токен не попадает в URL, логи и метаданные ----------
+ 
+ def test_token_never_in_url_logs_or_meta(fetch_env, http_log, capsys):

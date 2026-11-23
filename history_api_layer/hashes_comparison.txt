@@ -1,0 +1,35 @@
+=== Сравнение SHA256 с базовой линией (hashes_after.txt — post-TIMEOUT-FIX, pre-PART-CLEANUP-AUDIT) ===
+
+Файл                          | baseline (hashes_after.txt)     | current                         | статус
+------------------------------|---------------------------------|---------------------------------|-----------------------------
+fetch_archive_zip.py          | 9b304ddf33a1a3312657b4749818ff73| 64777ba10890f08be676546286f0e8a| ИЗМЕНЁН (ожидаемо, задача URL)
+hal_config.py                 | 9f01cc9b9ba94e7bfa4444b004596439| 9f01cc9b9ba94e7bfa4444b004596439| БЕЗ ИЗМЕНЕНИЙ ✓
+hal_common.py                 | f88f5be0169514e5a7a434356ee9b4dc| f88f5be0169514e5a7a434356ee9b4dc| БЕЗ ИЗМЕНЕНИЙ ✓
+inspect_zip.py                | 1d354959b89df1fbcd1d2dbc94a00e03| 1d354959b89df1fbcd1d2dbc94a00e03| БЕЗ ИЗМЕНЕНИЙ ✓
+normalize_ids_fields.py       | 29c11d8a4705d5f88a94adfadffbc628| 29c11d8a4705d5f88a94adfadffbc628| БЕЗ ИЗМЕНЕНИЙ ✓
+report_suitability_5m.py     | 82642f37238ca35bbfc80df1b6576255| 82642f37238ca35bbfc80df1b6576255| БЕЗ ИЗМЕНЕНИЙ ✓
+README.md                     | f123ba2ece026b4446b4529575da7e6c| f123ba2ece026b4446b4529575da7e6c| БЕЗ ИЗМЕНЕНИЙ ✓
+STAGE_2A_REPORT.md            | c85aa088a279ff3a6bb1cc703ef7eed4| c85aa088a279ff3a6bb1cc703ef7eed4| БЕЗ ИЗМЕНЕНИЙ ✓
+tests/conftest.py             | 668732db56db9dba033582d83ce8599c| 668732db56db9dba033582d83ce8599c| БЕЗ ИЗМЕНЕНИЙ ✓
+tests/test_corrupt_zip.py     | 98c1e94d5db2d848ed3abb0f98bbd035| 98c1e94d5db2d848ed3abb0f98bbd035| БЕЗ ИЗМЕНЕНИЙ ✓
+tests/test_duplicates.py      | 1770dcb15a3af885d6f012db72b3bf96| 1770dcb15a3af885d6f012db72b3bf96| БЕЗ ИЗМЕНЕНИЙ ✓
+tests/test_fetch_url.py       | 6500db64f091bb5dccc1df634b34c515| 6358b4f9b7f6a7a199a0793c4b0b8bfb| ИЗМЕНЁН (ожидаемо, задача URL)
+tests/test_no_overwrite.py    | 6ff73ca004d18eaf5be0c474f801041d| 6ff73ca004d18eaf5be0c474f801041d| БЕЗ ИЗМЕНЕНИЙ ✓
+tests/test_no_trading_calls.py | ef33bd5e51b5cdc6f48481fdb289d41c| ef33bd5e51b5cdc6f48481fdb289d41c| БЕЗ ИЗМЕНЕНИЙ ✓
+tests/test_part_cleanup_audit.py | (новый файл предыдущей задачи)  | e95760381f06724b1112dfe09a98a3a7| БЕЗ ИЗМЕНЕНИЙ ✓
+tests/test_required_fields.py | e9e32883f37421ae7d2defe79ee1b8fb| e9e32883f37421ae7d2defe79ee1b8fb| БЕЗ ИЗМЕНЕНИЙ ✓
+tests/test_suitability_5m.py  | 308ba5462be7106ce24ed7a89c15013c| 308ba5462be7106ce24ed7a89c15013c| БЕЗ ИЗМЕНЕНИЙ ✓
+tests/test_timeout_handling.py| ca8eaa2a93ca4d16b70fa1c25ccbd566| ca8eaa2a93ca4d16b70fa1c25ccbd566| БЕЗ ИЗМЕНЕНИЙ ✓
+tests/test_timestamps.py      | a075ab75557a5d6ea58bd1d80fbca92a| a075ab75557a5d6ea58bd1d80fbca92a| БЕЗ ИЗМЕНЕНИЙ ✓
+tests/test_zip_reading.py     | f21c6230b8ccbb513ceeb7d2388bb6c2| f21c6230b8ccbb513ceeb7d2388bb6c2| БЕЗ ИЗМЕНЕНИЙ ✓
+
+ИТОГ:
+- ИЗМЕНЕНЫ ровно 2 файла: fetch_archive_zip.py + tests/test_fetch_url.py
+- ВСЕ остальные 18 production- и test-файлов байт-в-байт совпадают с baseline
+- В частности, hal_config.py не тронут (ограничение соблюдено)
+- timeout/retry-защита (tests/test_timeout_handling.py, 13 тестов) — БЕЗ ИЗМЕНЕНИЙ
+- cleanup .part защита (tests/test_part_cleanup_audit.py, 12 тестов) — БЕЗ ИЗМЕНЕНИЙ
+- Воспроизводимость: pre-my-edit состояние fetch_archive_zip.py реконструировано
+  применением timeout_fix.diff + part_cleanup_audit.diff к .orig базовой линии;
+  SHA256 реконструкции (956c2132a1d27278294c25dad4e3b251739e2876a276cdaacde58b8a7d3d779c)
+  совпадает с зафиксированным в предыдущей сессии значением.
